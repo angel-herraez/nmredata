@@ -1,0 +1,370 @@
+/* NMReDATA reader in an html page, using JSmol
+    beta version 0.0.9, 2019-04-29, AH 
+*/
+
+/* Extra requirements:
+  JSmol.min.js        // from Jmol distribution (includes jQUery)
+  j2s/                // from Jmol distribution
+  php/                // from Jmol distribution
+  js/JSmolJSV.js      // from Jmol distribution, version 14.29.39+
+  jstree/jstree.min.js              // from https://www.jstree.com/
+  jstree/themes/NMReDATA/style.css  // customised from https://www.jstree.com/
+  jquery.modal.min.js    // from https://cdnjs.cloudflare.com/ajax/libs/jquery-modal/0.9.1/jquery.modal.min.js
+  jquery.modal.min.css   // from https://cdnjs.cloudflare.com/ajax/libs/jquery-modal/0.9.1/jquery.modal.min.css
+  several CSS rules specific to this page
+*/
+
+var nmrEdata = {};
+var nmrEsupp = {};
+var nmrEdataVersion;
+var nModelsInSdf;
+var myJSmol = 'myJSmol';
+var JSmolPath = '';
+var JSmolInfo = {
+	width: '100%',
+	height: '100%',
+	j2sPath: JSmolPath + 'j2s',
+	serverURL: JSmolPath + 'php/jsmol.php',
+	script: 'set echo e0 50% 50%; set echo e0 center; echo ready; refresh;',
+	zIndexBase: 20,
+    language: "en-US",
+	use: 'html5'
+}
+var JSmolInfoL = Object.assign({}, JSmolInfo); //clone
+JSmolInfoL.width = '100%';
+JSmolInfoL.height = '100%';
+JSmolInfoL.script = '';
+Jmol._alertNoBinary = false;
+delete Jmol._tracker;
+var jsvInfo = {
+	width: '100%',
+	height: '100%',
+	color: '#FFFFDD',
+	disableInitialConsole: true,
+	zIndexBase: 20,
+	script: ''//'load acetophenone.jdx'
+}
+
+function Jspt(x) { Jmol.script(myJSmol, x); }
+
+function loadFile(fName) {
+	clearSections2();
+	clearJSV();
+	$('#structTitle').html( '' );
+	if ( /\.zip$/.test(fName) ) { 
+		$('#fileTreeTitle').html('');
+		$('#fileTree').html( '<div id="loadingZip"><br>...reading directory in zipfile...<br><big>&#x23F2;</big></div>' ); 
+		Jspt('zap; molDat = load("' + fName + '", true); ');
+		loadZipFile('molDat', fName); 
+		return; 
+	}
+	if ( /\.sdf$/.test(fName) ) { 
+		Jspt('zap; molDat = load("' + fName + '");');
+		loadSdfFile('molDat', fName); 
+		return; 
+	}
+	alert( 'Trying to read unknown file type of ' + fName );	
+}
+function loadZipFile(x, fName) { // x is name of a Jmol variable that holds the data
+	var fList0, fList;
+		// get (array) file list inside zip:			
+	fList0 = Jmol.evaluateVar(myJSmol, x+'.keys'); 
+	if ( fList0[0] == '$_BINARY_$' ) { fList0.shift(); fList = fList0; }
+	else { fList = fList0.filter(function(value){return value!=='$_BINARY_$';}); } //removes 
+	fList0 = [];
+	parseFileTree(fList, fName);
+}
+function parseFileTree(tx,fn) {
+	var a0 = tx;
+	var a1 = [], a0n = [];
+	a0 = a0.sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); }); // sort case-insensitive
+	var nn,i,j;
+	var fiIcon = '{"icon":"jstree/themes/NMReDATA/file.png"}';
+	var t = '<ul>';
+	var curDir = a0[0].substring(0, 1 + a0[0].lastIndexOf('/'));
+	for (i=0; i<a0.length; i++) {
+		t2 = a0[i];
+		if (i==0) {
+			t += '<li data-idx=' + i;
+			if ( /\.sdf$/.test(t2) ) { t += ' data-sdf=1'; }
+			t += isFileOrFolder(t2);			
+		} else {
+			if ( t2.indexOf(curDir)==0 ) {
+				t2 = t2.replace(curDir, '');
+			} else {
+				nn = 0;
+				while ( t2.indexOf(curDir)<0 ) {
+					curDir = curDir.substring(0,curDir.length-1); //remove final slash
+					curDir = curDir.substring(0,1+curDir.lastIndexOf('/')); //up one level
+					nn++;
+				}
+				t2 = t2.replace(curDir, '');
+				for (j=0; j<nn; j++) {
+					t += '</ul></li>';
+				}		  
+			}
+			t += '<li data-idx=' + i;
+			if ( t2.charAt(t2.length-1) == '/' ) {
+				curDir = a0[i].substring(0, 1 + a0[i].lastIndexOf('/'));
+			} else {
+				if ( /\.sdf$/.test(t2) ) { t += ' data-sdf=1'; }
+			}
+			t += isFileOrFolder(t2);
+		} 
+		
+		if ( t2.charAt(t2.length-1) == '/' ) {
+			t += '<ul>';
+		} else {
+			t += '</li>'; 
+		}
+	}
+	
+	$('#fileTreeTitle').html( '<img src="jstree/themes/NMReDATA/zip2.png">' + fn );
+	if ($.jstree.reference($('#fileTree'))) {
+		$("#fileTree").jstree('destroy');
+	}
+	$('#fileTree').html( t );	
+	$('#fileTree').jstree({
+    "core" : { "check_callback" : true }, // so that modifying operations work
+    "plugins" : [ "contextmenu" ],
+			"contextmenu": {
+			  "select_node": false, 
+				"items": function ($node) { 
+				  var thisNode = document.getElementById($node.id);
+				  if ( thisNode.dataset.sdf != 1 ) { return null; }
+					var tree = $("#fileTree").jstree(true);
+					return {
+						"Model": {
+							"label": "Model",
+							"action": false,
+							"icon": "jstree/themes/NMReDATA/sdf.png",
+							"submenu": {
+								"Display": {
+									"label": "Display structure",
+									"icon": "jstree/themes/NMReDATA/view.png",
+									action: function (obj) {
+										Jspt('z = "" + molDat["' + a0[thisNode.dataset.idx] + '"]; '); // force object to string
+										loadSdfFile('z', $node.text);
+									}
+								},
+								"Save": {
+									"label": "Save to disk",
+									"icon": "jstree/themes/NMReDATA/save.png",
+									action: function (obj) {
+										Jspt('z = molDat["' + a0[thisNode.dataset.idx] + '"]; write var z "' + a0[thisNode.dataset.idx] + '"; ');
+									}
+								}
+							}
+						}
+					};
+				}
+			}
+  });
+	$('#fileTree').on("changed.jstree", function (e, data) {
+		var t, t2, op, thisNode;
+		var textItems ='' ; //////////////////////////////////////////////////////////////////////////////////////////////////
+		clearSections2();
+		op = data.instance.get_node(data.selected[0]);
+		thisNode = document.getElementById(op.id);
+		if ( /\.sdf$/.test(op.text) ) { 
+			Jspt('z = "" + molDat["' + a0[thisNode.dataset.idx] + '"]; '); // force object to string
+			loadSdfFile('z', op.text);	
+		} else if ( /\.(txt|temp|output|info|par)$/i.test(op.text) ) { 
+			Jspt('z = "" + molDat["' + a0[thisNode.dataset.idx] + '"]; '); // force object to string
+			t = Jmol.evaluateVar(myJSmol, 'z');
+			t = t.replace(/(\n\r|\r\n|\n|\r)/g, '<br>');
+			$('#itemContents').html( t );
+		} else if ( /\.png$/i.test(op.text) ) { 
+			Jspt('imB = molDat["' + a0[thisNode.dataset.idx] + '"]; imA = format("BASE64",imB);');
+			//t = '<img class="scale2" src="data:image/png' + Jmol.evaluateVar(myJSmol, 'imA') + '" style="margin:1ex;">';
+			t = '<img src="data:image/png' + Jmol.evaluateVar(myJSmol, 'imA') + '" style="margin:1ex;" onload="double(this)">';
+			$('#itemContents').html( t );
+		} else if ( /\.(dx|jdx)$/i.test(op.text) ) {
+			Jspt('z = "" + molDat["' + a0[thisNode.dataset.idx] + '"]; ');
+			t = Jmol.evaluateVar(myJSmol, 'z'); 
+		    /*
+			t2 = 'data:application/octet-stream,' + encodeURIComponent(t);
+			Jmol.jsvRunScriptNow(myJSV, 'load "' + t2 + '";');
+			*/
+			Jmol.jsvLoadInline(myJSV, t);
+			t = t.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			t = t.replace(/(\n\r|\r\n|\n|\r)/g, '<br>');
+			$('#itemContents').html( t );
+		}
+  });	
+}
+
+function isFileOrFolder(t2) {
+	var fiIcon = '{"icon":"jstree/themes/NMReDATA/file.png"}';
+	var t = '';
+	if ( t2.charAt(t2.length-1) == '/' ) {
+		t += '>' + t2.substring(0,t2.length-1);
+	} else {
+		t += ' data-jstree=' + fiIcon + '>' + t2;
+  }
+	return t;
+}
+
+function loadSdfFile(x, fName) { // x is name of a Jmol variable that holds the data
+	var i,j,s,t,fileC,fileS,fileTags=[],fileTags2;
+	fileS = Jmol.evaluateVar(myJSmol, x).split('$$$$\n');
+	i = fileS.length;
+	while(i--) { // clean the array (empty lines after last $$)
+		if ( fileS[i].trim() == '' ) { fileS.pop(); }
+	}
+	nModelsInSdf = fileS.length;
+	/*$('#navModels').html('');
+	if (nModelsInSdf>1) { $('#navModels').html('Models:'); }*/
+	$('#navModels').html( nModelsInSdf>1 ? 'Models:<br>' : '' );
+	
+	for (i=1; i<=nModelsInSdf; i++) {
+		if (nModelsInSdf>1) {  fileTags.push('_MODELNUMBER_' + i + '_\n'); }
+		fileC = fileS[i-1];
+		t = '\nM  END';
+		j = fileC.lastIndexOf(t) + t.length;
+		fileC = fileC.substring(j);  // exclude moldata block
+		t = new RegExp(/\n> +/);
+		fileTags2 = fileC.split(t);
+		j = fileTags2.length;
+		while (j--) { if ( fileTags2[j].trim() == '' ) { fileTags2.splice(j,1); } } //removes empty element
+		if (nModelsInSdf>1) {
+			j = fileTags2.length;
+			while (j--) { fileTags2[j] = '[' + i + '] ' + fileTags2[j]; }
+			$('#navModels').append('<button onClick="navModel(' + i + ')">' + i + '</button>');
+		} 
+		fileTags = fileTags.concat(fileTags2);
+	}
+	
+	if (nModelsInSdf>1) {
+		var n,k;
+		for (i=1; i<=nModelsInSdf; i++) {
+			n = 0;
+			j = fileTags.length;
+			while (j--) {
+				if ( fileTags[j].indexOf('[' + i + '] ')==0  ) { n++; } // count empty, numbered, tags
+				if ( fileTags[j].indexOf('_MODELNUMBER_' + i + '_')==0  ) { k=j; } // store index of header
+			}
+			if (n==0) { fileTags.splice(k,1); } // remove header
+		}
+	}	
+	
+	displayTagContents(fileTags);
+	s = 'load "@' + x + '"; ';
+	//s += 'set labelOffset 0 0; set labelAlignment center; color label cyan; label %i; label off;';
+	s += 'font label 10 serif; set fontScaling on; set labelOffset 2 -1; set labelPointer on; background label cornSilk; color label midnightBlue; ';
+	s += 'frame rewind;';
+	Jspt(s);
+	$('#structTitle').html( fName );
+}
+function saveSDF() {
+	Jspt('write coords "' + $('#structTitle').html() + '";')
+}
+function navModel(k) {
+	Jspt('frame ' + k);
+}
+function displayTagContents(tgs) {
+	var i,t,prp;
+	nmrEdata = {};
+	nmrEsupp = {};
+	clearSections2();
+	for (i=0; i<tgs.length; i++) {
+		t = tgs[i].split('\n')[0];
+		t = t.replace(/[<>]/g, '');
+		if (t.indexOf('NMREDATA_')>=0) {
+			t = t.replace(/NMREDATA_/,'');
+			nmrEdata[t] = tgs[i].substring(tgs[i].indexOf('\n')+1);
+			if ( t.indexOf('VERSION')==0 ) { nmrEdataVersion = parseFloat(nmrEdata[t].split('\n')[0].split('\\')[0]); }
+		} else { //other tags
+			nmrEsupp[t] = tgs[i].substring(tgs[i].indexOf('\n')+1);
+		}
+	}
+	t = '<ul>';
+	for (prp in nmrEdata) {
+		t += '<li class="collapsibleParent">' + prp + '<ul class="collapsibleChild"><li>';
+		if ( nmrEdata[prp].trim().length==0 ) { t += '<br>'; }
+		if (nmrEdataVersion>1.0) {
+			t += nmrEdata[prp].replace(/\\\n/g,'<br>');
+		} else {
+			t += nmrEdata[prp].replace(/\n/g,'<br>');
+		}
+		t += '</li></ul></li>';
+	}
+	t += '</ul>';
+	$('#NMReDATAtags').html(t);
+	t = '<ul>';
+	for (prp in nmrEsupp) {
+		if ( /_MODELNUMBER_/.test(prp) ) {
+			t += '<li>' + prp.replace(/_/g,'').replace('MODELNUMBER','model number ') + '</li>';			
+		} else {
+			t += '<li class="collapsibleParent">' + prp + '<ul class="collapsibleChild"><li>';
+			if ( nmrEsupp[prp].trim().length==0 ) { t += '<br>'; }
+			t += nmrEsupp[prp].replace(/\n/g,'<br>') + '</li></ul></li>';
+		}
+	}
+	t += '</ul>';
+	$('#supplTags').html(t);
+	makeCollapsible();
+}
+
+function makeCollapsible() {
+	// collapsible list:
+  $('.collapsibleChild').hide();
+	$('.collapsibleParent').click( function() {
+		$(this).find('ul').slideToggle();
+	});
+	$('.collapsibleChild').click(function(event){ event.stopPropagation(); });  
+}
+function clearSections2() {
+	var x = ['NMReDATAtags', 'supplTags', 'itemContents'];
+	var i = x.length;
+	while(i--) {
+		$('#'+x[i]).html( '' );
+	}
+}
+function clearJSV() {
+	$('#JSpecvCont').html( );
+	$('#JSpecvCont').html( Jmol.getJSVAppletHtml('myJSV',jsvInfo) );	//clear
+}
+function Jpop() {
+	$('#largeJSmol').modal();
+	Jmol.script(JSmolL, Jmol.getPropertyAsString(myJSmol, 'stateInfo'));
+}
+function displayAssignments_1() {
+	// c, 1.401, 6, 7, 8\  label in spectra ; shift ; atomNrs
+	var i, x, t, lbl, shft, s='';
+	x = nmrEdata.ASSIGNMENT.split('\\\n');
+	for (i=0; i<x.length; i++) {
+		if (x[i].trim().length==0) { continue; }
+		t = x[i].replace(/;.*/,''); // discard commments
+		t = t.replace(/, /g, ',');
+		lbl = t.substring(0,t.indexOf(','));
+		t = t.replace(lbl+',','');
+		shft = t.substring(0,t.indexOf(','));
+		t = t.replace(shft+',','');	  
+		shft = parseFloat(shft).toFixed(1);
+		s += 'select atomNo=' + t + '; label "' + lbl + ';\u03B4=' + shft + '";';
+	}
+	s += 'select all;';
+	Jspt(s);
+}
+function displayAssignments() {
+	// c, 1.401, 6, 7, 8\  label in spectra ; shift ; atomNrs
+	var i, x, t, lbl, shft, s='';
+	x = nmrEdata.ASSIGNMENT.split('\\\n');
+	for (i=0; i<x.length; i++) {
+		if (x[i].trim().length==0) { continue; }
+		t = x[i].split(';')[0]; // discard commments
+		t = t.replace(/, /g, ',').split(',');
+		lbl = t.shift();
+		shft = t.shift();
+		shft = parseFloat(shft).toFixed(1);
+		t = 'atomNo=' + t.join(',atomNo=');
+		s += 'select ' + t + '; label "' + lbl + ';\u03B4=' + shft + '";';
+	}
+	s += 'select all;';
+	Jspt(s);
+}
+function double(elm) { //image without explicit size
+	elm.height *= 2;
+    //elm.width *= 2;
+}
